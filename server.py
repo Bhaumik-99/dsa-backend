@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware  # <--- THIS WAS MISSING
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -11,7 +12,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
-from zoneinfo import ZoneInfo  # Moved to top level for cleaner access
+from zoneinfo import ZoneInfo
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
