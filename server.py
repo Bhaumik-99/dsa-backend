@@ -1,7 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -12,6 +11,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
+from zoneinfo import ZoneInfo  # Moved to top level for cleaner access
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -298,8 +298,6 @@ async def get_today_revisions(
     timezone_str: str = "UTC",
     current_user: dict = Depends(get_current_user)
 ):
-    from zoneinfo import ZoneInfo
-    
     try:
         user_tz = ZoneInfo(timezone_str)
     except Exception:
@@ -382,7 +380,6 @@ async def mark_revision_complete(
     )
     
     # Update user streak
-    from zoneinfo import ZoneInfo
     user_tz = ZoneInfo("UTC")
     today = datetime.now(user_tz).date().isoformat()
     
@@ -390,16 +387,13 @@ async def mark_revision_complete(
     yesterday = (datetime.now(user_tz).date() - timedelta(days=1)).isoformat()
     
     if last_rev_date == today:
-        # Already revised today, no streak change
         pass
     elif last_rev_date == yesterday:
-        # Continue streak
         await db.users.update_one(
             {"id": current_user["id"]},
             {"$inc": {"streak": 1}, "$set": {"last_revision_date": today}}
         )
     else:
-        # Reset streak
         await db.users.update_one(
             {"id": current_user["id"]},
             {"$set": {"streak": 1, "last_revision_date": today}}
@@ -408,7 +402,10 @@ async def mark_revision_complete(
     return {"message": "Revision marked complete", "status": new_status}
 
 @api_router.get("/analytics")
-async def get_analytics(current_user: dict = Depends(get_current_user)):
+async def get_analytics(
+    timezone_str: str = "UTC",  # Added timezone parameter
+    current_user: dict = Depends(get_current_user)
+):
     problems = await db.problems.find(
         {"user_id": current_user["id"]},
         {"_id": 0}
@@ -429,9 +426,12 @@ async def get_analytics(current_user: dict = Depends(get_current_user)):
     for p in problems:
         difficulty_dist[p["difficulty"]] = difficulty_dist.get(p["difficulty"], 0) + 1
     
-    # Get today's count
-    from zoneinfo import ZoneInfo
-    user_tz = ZoneInfo("UTC")
+    # Get today's count - WITH TIMEZONE FIX
+    try:
+        user_tz = ZoneInfo(timezone_str)
+    except Exception:
+        user_tz = ZoneInfo("UTC")
+
     now_user = datetime.now(user_tz)
     today_start = now_user.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
@@ -450,6 +450,8 @@ async def get_analytics(current_user: dict = Depends(get_current_user)):
             if rev_date.tzinfo is None:
                 rev_date = rev_date.replace(tzinfo=timezone.utc)
             rev_date_user = rev_date.astimezone(user_tz)
+            
+            # Using same logic as revisions/today endpoint
             if rev_date_user.date() <= today_end.date():
                 due_today += 1
             break
