@@ -103,8 +103,11 @@ class ProblemResponse(BaseModel):
     created_at: str
     is_leetcode: bool = False
 
+# UPDATED: Added completed_at and timezone_str
 class RevisionUpdate(BaseModel):
     revision_stage: str = Field(pattern="^(day1|day3|day7|day14|day30)$")
+    completed_at: Optional[str] = None
+    timezone_str: Optional[str] = "UTC"
 
 # ==================== AUTH HELPERS ====================
 
@@ -369,21 +372,53 @@ async def mark_revision_complete(
     if data.revision_stage in problem["completed_revisions"]:
         raise HTTPException(status_code=400, detail="Revision already completed")
     
+    # Parse the exact time the user completed it
+    if data.completed_at:
+        completed_time = datetime.fromisoformat(data.completed_at.replace('Z', '+00:00'))
+    else:
+        completed_time = datetime.now(timezone.utc)
+
+    # UPDATED LOGIC: Calculate dynamic intervals for future dates based on completion time
+    # This defines how many days to jump FORWARD from the newly completed stage.
+    # Ex: If they just finished 'day3', the next date ('day7') should be 4 days from NOW.
+    gaps_from_stage = {
+        "day1": [("day3", 2), ("day7", 6), ("day14", 13), ("day30", 29)],
+        "day3": [("day7", 4), ("day14", 11), ("day30", 27)],
+        "day7": [("day14", 7), ("day30", 23)],
+        "day14": [("day30", 16)],
+        "day30": []
+    }
+
+    dynamic_updates = {}
+    for next_stage, days_to_add in gaps_from_stage.get(data.revision_stage, []):
+        new_date = (completed_time + timedelta(days=days_to_add)).isoformat()
+        dynamic_updates[f"revision_dates.{next_stage}"] = new_date
+
     # Add to completed revisions
     completed = problem["completed_revisions"] + [data.revision_stage]
     
     # Check if mastered (all revisions complete)
     new_status = "mastered" if "day30" in completed else "learning"
     
+    # Bundle updates
+    update_doc = {
+        "completed_revisions": completed,
+        "status": new_status,
+        **dynamic_updates
+    }
+
     await db.problems.update_one(
         {"id": problem_id},
-        {"$set": {"completed_revisions": completed, "status": new_status}}
+        {"$set": update_doc}
     )
     
-    # Update user streak
-    user_tz = ZoneInfo("UTC")
+    # Update user streak (using their timezone if available)
+    try:
+        user_tz = ZoneInfo(data.timezone_str) if data.timezone_str else ZoneInfo("UTC")
+    except Exception:
+        user_tz = ZoneInfo("UTC")
+        
     today = datetime.now(user_tz).date().isoformat()
-    
     last_rev_date = current_user.get("last_revision_date")
     yesterday = (datetime.now(user_tz).date() - timedelta(days=1)).isoformat()
     
